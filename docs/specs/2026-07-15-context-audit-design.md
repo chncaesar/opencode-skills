@@ -62,10 +62,9 @@ Per-candidate interpretability fields:
 | `appears_after` (OVERSIZED only) | turns since last successful similar command |
 | `retried` / `wasted` (FAILED only) | whether a fix attempt followed, how many wasted turns |
 | `interval` (DUPLICATE only) | turns between repeated reads of same file |
-| `severity` | HIGH / MEDIUM / LOW — composite of cost, location, and harm |
-
 Script outputs Block A and Block B as plain text to stdout. No recommendations,
-no interpretation — just structured data fields.
+no interpretation — just structured data fields. No severity scoring — the LLM
+reaches its own judgment from the raw fields (cost, location, prunable, etc.).
 
 ## AI Workflow (SKILL.md)
 
@@ -98,18 +97,19 @@ Read Block B and synthesize:
 
 1. **Summary verdict** — one sentence. Example: "62% of tool output is noise —
    3 oversized build dumps and 2 failed commands that were later retried."
-2. **Per-category interpretation** — sort by severity, one sentence per
-   candidate category:
-   - HIGH severity: call out explicitly, explain why.
-   - LOW severity DUPLICATE with large interval: mark as "likely justified
-     re-read, not noise."
+2. **Per-candidate interpretation** — LLM reads each candidate's raw fields
+   (cost, location, prunable, retried/wasted, interval) and reaches its own
+   judgment on whether this is real noise or a false alarm:
+   - DUPLICATE with large interval: "likely justified re-read, not noise."
+   - FAILED since fixed: "dead weight."
+   - OVERSIZED at tail of session: "costly but recent, hard to avoid."
 3. **Actionable recommendations** — map findings to concrete actions:
-   - Multiple HIGH severity in recent turns → suggest using tester subagent to
-     isolate test/build output.
-   - Multiple HIGH severity in old turns, prunable=YES → suggest enabling
-     `compaction.prune` in OpenCode config.
+   - Oversized outputs piling up in recent turns → suggest using tester
+     subagent to isolate test/build output.
+   - Old payloads, prunable=YES → suggest enabling `compaction.prune`.
    - Failed commands since fixed → "dead weight, no action needed."
-   - Tool ratio >70% but all LOW severity → accept, no action recommended.
+   - Tool ratio >70% but all candidates are low-impact → accept, no action
+     recommended.
 
 ### Edge Cases
 
