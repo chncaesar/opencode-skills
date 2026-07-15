@@ -11,7 +11,7 @@ errors were later fixed. Detects SchemaError failures, retried commands, and
 other wasted context.
 
 ```
-python3 context-audit/context_audit.py <session_id>
+python3 context-audit/scripts/context_audit.py <session_id>
 ```
 
 Produces: context composition table + failed call classification + actionable

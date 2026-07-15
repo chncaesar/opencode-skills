@@ -17,7 +17,7 @@ failed tool calls whose errors were later resolved by a successful retry.
 
 2. Run the script:
    ```bash
-   python3 ~/.config/opencode/skills/context-audit/context_audit.py <session_id>
+   python3 ~/.config/opencode/skills/context-audit/scripts/context_audit.py <session_id>
    ```
 
 3. Present the output verbatim. The script handles all detection, classification,
