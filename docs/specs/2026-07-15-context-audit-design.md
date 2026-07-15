@@ -2,10 +2,9 @@
 
 ## Overview
 
-`/context-audit` is an OpenCode skill that analyzes session context composition,
-identifies noise (oversized tool outputs, failed commands, redundant reads), and
-produces actionable recommendations. It combines a Python script for data
-extraction with AI-powered interpretation for judgment and advice.
+`/context-audit` is an OpenCode skill that analyzes session context for dead-weight
+tool output — failed commands whose errors were later fixed. It combines a Python
+script for data extraction with AI-powered interpretation for judgment and advice.
 
 ## Architecture
 
@@ -17,19 +16,17 @@ extraction with AI-powered interpretation for judgment and advice.
     ├── AI invokes script:
     │     context_audit.py <session_id>
     │       ├── connects ~/.local/share/opencode/opencode.db (read-only)
-    │       ├── queries message table for token budgets
-    │       ├── queries part table grouped by type
-    │       └── outputs structured text (Block A + Block B)
+    │       ├── queries part table for context composition (Block A)
+    │       ├── queries part table for failed tool calls (Block B)
+    │       └── outputs structured text
     │
     └── AI reads script output:
           ├── Section A: presents context composition table verbatim
-          └── Section B: interprets noise candidates, synthesizes recommendations
+          └── Section B: interprets failed tool calls, classifies each as
+              dead weight or legitimate investigation
 ```
 
-Script produces data. AI produces judgment. The script has zero knowledge of what
-"noise" means — it just extracts and ranks candidates by measurable signals.
-The AI, guided by SKILL.md, applies semantic rules to determine real noise from
-false positives and to generate recommendations.
+Script produces data. AI produces judgment.
 
 ## Script Output
 
@@ -42,29 +39,26 @@ false positives and to generate recommendations.
 | estimated chars | sum of text length or tool output length per type |
 | percentage | type bytes / total bytes |
 
-### Block B: Noise Candidates
+### Block B: Failed Tool Calls
 
-Three noise signals, detected mechanically:
+Single detection rule: `part.state.status == "error"` — tool calls that returned
+an error.
 
-| Signal | Detection Rule | Data Source |
-|--------|---------------|-------------|
-| `OVERSIZED` | tool output > 4,000 chars | `part.state.output` length |
-| `FAILED` | `part.state.status == "error"` | `json_extract(part.data, '$.state.status')` |
-| `DUPLICATE` | same read/glob target appears ≥ 2 times | group by target, count ≥ 2 |
-
-Per-candidate interpretability fields:
+Per-failure fields:
 
 | Field | Meaning |
 |-------|---------|
-| `cost` | candidate bytes as % of total tool output bytes |
+| `tool` | tool name (bash, read, grep, etc.) |
+| `command` | the command or input that failed |
+| `error` | error message or reason (truncated to 500 chars) |
+| `cost` | error output bytes as % of total tool output bytes |
 | `location` | turn N of M — head (old) vs tail (recent) |
+| `retried` | whether the same command was attempted again in a later turn |
+| `wasted` | how many turns between this failure and the retry that succeeded |
 | `prunable` | whether OpenCode's built-in `compaction.prune` could clear this |
-| `appears_after` (OVERSIZED only) | turns since last successful similar command |
-| `retried` / `wasted` (FAILED only) | whether a fix attempt followed, how many wasted turns |
-| `interval` (DUPLICATE only) | turns between repeated reads of same file |
-Script outputs Block A and Block B as plain text to stdout. No recommendations,
-no interpretation — just structured data fields. No severity scoring — the LLM
-reaches its own judgment from the raw fields (cost, location, prunable, etc.).
+
+Script outputs Block A and Block B as plain text to stdout. No classification,
+no recommendations — just structured data fields.
 
 ## AI Workflow (SKILL.md)
 
@@ -83,33 +77,44 @@ The skill is triggered manually via `/context-audit`.
 python3 ~/.config/opencode/skills/context-audit/context_audit.py <session_id>
 ```
 
-Script output enters context directly.
-
 ### Step 3 — Produce Dual-Section Output
 
 **Section A: Context Composition**
 
 Present Block A verbatim. No modifications.
 
-**Section B: Noise Analysis + Recommendations**
+**Section B: Failed Tool Call Analysis**
 
-Read Block B and synthesize:
+Read Block B and classify each failed call:
 
-1. **Summary verdict** — one sentence. Example: "62% of tool output is noise —
-   3 oversized build dumps and 2 failed commands that were later retried."
-2. **Per-candidate interpretation** — LLM reads each candidate's raw fields
-   (cost, location, prunable, retried/wasted, interval) and reaches its own
-   judgment on whether this is real noise or a false alarm:
-   - DUPLICATE with large interval: "likely justified re-read, not noise."
-   - FAILED since fixed: "dead weight."
-   - OVERSIZED at tail of session: "costly but recent, hard to avoid."
-3. **Actionable recommendations** — map findings to concrete actions:
-   - Oversized outputs piling up in recent turns → suggest using tester
-     subagent to isolate test/build output.
-   - Old payloads, prunable=YES → suggest enabling `compaction.prune`.
-   - Failed commands since fixed → "dead weight, no action needed."
-   - Tool ratio >70% but all candidates are low-impact → accept, no action
-     recommended.
+```
+## Noise Classification Rules
+
+You will receive a list of failed tool calls from the script.
+Classify each one as NOISE (dead weight) or INVESTIGATION (possibly useful),
+using only the fields provided.
+
+Classify as NOISE (dead weight) when:
+- retried = YES → a later attempt succeeded. The failure output is dead weight
+  — every byte of it is a record of a problem that no longer exists.
+
+Classify as INVESTIGATION (possibly useful) when:
+- retried = NO → the failure was never resolved. The error output may still be
+  relevant to the user's current task.
+
+Output format:
+
+  "Found N failed tool calls, M are dead weight (X% of tool output bytes)."
+  (list each with classification and one-sentence reasoning)
+
+Recommendation:
+- retried = YES, prunable = YES → suggest enabling compaction.prune to
+  auto-clear these.
+- retried = YES, but in recent turns → nothing urgent; they'll age out or be
+  pruned later.
+- retried = NO → mark as potential investigation context; do not suggest
+  removal.
+```
 
 ### Edge Cases
 
@@ -117,7 +122,7 @@ Read Block B and synthesize:
 |----------|----------|
 | Script fails (DB missing, permissions) | Tell user to check `~/.local/share/opencode/opencode.db` exists and is readable |
 | Session has < 50 parts | "Session too small for meaningful audit" |
-| Zero noise candidates | "Context is clean — no noise signals detected" |
+| Zero failed tool calls | "Context is clean — no failed tool calls detected" |
 
 ## File Layout
 
